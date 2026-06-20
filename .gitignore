@@ -1,0 +1,15 @@
+bin/
+obj/
+/packages/
+riderModule.iml
+/_ReSharper.Caches/
+.idea/
+.claude/
+
+# Secrets — never commit these
+appsettings.Development.json
+credentials.json
+token_store/
+
+# Runtime state
+last_run.json
