@@ -1,0 +1,14 @@
+services:
+  billing:
+    image: billing-notification-service:latest
+    restart: unless-stopped
+    ports:
+      - "5240:8080"
+    volumes:
+      - /volume1/docker/billing-service/appsettings.Production.json:/app/appsettings.Production.json:ro
+      - /volume1/docker/billing-service/credentials.json:/app/credentials.json:ro
+      - /volume1/docker/billing-service/token_store:/app/token_store
+      - /volume1/docker/billing-service/data:/app/data
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - BillingNotification__LastRunFile=/app/data/last_run.json
