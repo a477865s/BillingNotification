@@ -13,3 +13,6 @@ token_store/
 
 # Runtime state
 last_run.json
+
+# Docker artifacts
+billing-service.tar
