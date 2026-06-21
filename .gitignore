@@ -5,6 +5,7 @@ riderModule.iml
 /_ReSharper.Caches/
 .idea/
 .claude/
+*.DotSettings.user
 
 # Secrets — never commit these
 appsettings.Development.json
