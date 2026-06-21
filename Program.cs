@@ -103,8 +103,8 @@ app.MapPost("/api/billing/scan", async (
 .WithName("TriggerBillingScan")
 .WithOpenApi();
 
-// LINE Messaging API webhook — log your LINE User ID when you send any message to the bot
-app.MapPost("/api/line/webhook", async (HttpContext context, IConfiguration config, ILogger<Program> logger) =>
+// LINE Messaging API webhook
+app.MapPost("/api/line/webhook", async (HttpContext context, IConfiguration config, ILogger<Program> logger, BillingNotificationWorker worker) =>
 {
     var channelSecret = config["Line:ChannelSecret"] ?? "";
     using var ms = new MemoryStream();
@@ -133,7 +133,29 @@ app.MapPost("/api/line/webhook", async (HttpContext context, IConfiguration conf
             if (ev.TryGetProperty("source", out var source) &&
                 source.TryGetProperty("userId", out var userId))
             {
-                logger.LogWarning("==> Your LINE User ID: {UserId}  (copy this to Line:UserId in appsettings)", userId.GetString());
+                logger.LogInformation("LINE User ID: {UserId}", userId.GetString());
+            }
+
+            if (ev.TryGetProperty("type", out var evType) && evType.GetString() == "message" &&
+                ev.TryGetProperty("message", out var msg) &&
+                msg.TryGetProperty("type", out var msgType) && msgType.GetString() == "text" &&
+                msg.TryGetProperty("text", out var textEl))
+            {
+                var text = textEl.GetString() ?? "";
+                var replyToken = ev.TryGetProperty("replyToken", out var rt) ? rt.GetString() : null;
+
+                string[] keywords = ["信用卡", "帳單", "scan", "掃描"];
+                if (keywords.Any(k => text.Contains(k, StringComparison.OrdinalIgnoreCase)))
+                {
+                    if (replyToken != null)
+                    {
+                        var line = context.RequestServices.GetRequiredService<LineMessagingService>();
+                        await line.ReplyMessageAsync(replyToken, "📊 掃描中，請稍候...");
+                    }
+
+                    var target = DateTime.Now;
+                    _ = Task.Run(() => worker.RunScanAsync(target.Year, target.Month));
+                }
             }
         }
     }

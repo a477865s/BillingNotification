@@ -60,6 +60,30 @@ public class LineMessagingService
         return sb.ToString();
     }
 
+    public async Task ReplyMessageAsync(string replyToken, string text, CancellationToken ct = default)
+    {
+        var token = _config["Line:ChannelAccessToken"];
+        if (string.IsNullOrEmpty(token)) return;
+
+        var payload = new
+        {
+            replyToken,
+            messages = new[] { new { type = "text", text } }
+        };
+
+        using var client = _httpClientFactory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.line.me/v2/bot/message/reply");
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+        var response = await client.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogError("LINE reply failed: {Status} {Body}", response.StatusCode, body);
+        }
+    }
+
     private async Task PushMessageAsync(string userId, string text, CancellationToken ct)
     {
         var token = _config["Line:ChannelAccessToken"];
