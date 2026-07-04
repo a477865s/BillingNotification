@@ -1,3 +1,5 @@
+using BillingNotificationService.Enums;
+
 namespace BillingNotificationService.Models;
 
 public record BillingRecord(
@@ -7,5 +9,6 @@ public record BillingRecord(
     DateTime Date,
     decimal Amount,
     BillingLabel Label,
-    string Currency = "TWD"
+    string Currency = "TWD",
+    DateOnly? DueDate = null
 );

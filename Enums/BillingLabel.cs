@@ -1,4 +1,4 @@
-namespace BillingNotificationService.Models;
+﻿namespace BillingNotificationService.Enums;
 
 public enum BillingLabel
 {
@@ -10,5 +10,8 @@ public enum BillingLabel
     富邦信用卡 = 6,
     華銀信用卡 = 7,
     遠東信用卡 = 8,
-    聯邦信用卡 = 9
+    聯邦信用卡 = 9,
+    台水帳單 = 10,
+    台電帳單 = 11,
+    新海瓦斯帳單 = 12
 }
