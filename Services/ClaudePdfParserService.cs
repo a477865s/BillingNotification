@@ -54,7 +54,7 @@ public class ClaudePdfParserService
         {
             var response = await _claude.Messages.Create(new MessageCreateParams
             {
-                Model = Model.ClaudeOpus4_8,
+                Model = Model.ClaudeHaiku4_5,
                 MaxTokens = 50,
                 Messages =
                 [
