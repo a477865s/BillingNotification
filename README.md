@@ -4,15 +4,15 @@
 
 ## 這個服務在做什麼
 
-自動掃 Gmail 裡的信用卡帳單 PDF，用 AI 解析金額，依付款帳戶分組後推送 LINE 通知。
+自動掃 Gmail 裡的帳單信件，用 AI 解析金額，信用卡依付款帳戶分組推播給自己，水電瓦斯帳單則另外推給家人。
 
 ```
-Gmail 收到帳單信 → 掃描 PDF → Claude AI 解析金額 → 分組 → LINE 推播
+Gmail 收到帳單信 → 掃描 PDF/信件內容 → Claude AI 解析金額與繳費期限 → 分組 → LINE 推播
 ```
 
 也可以直接傳訊息給 LINE Bot 觸發：
 
-> 你：信用卡  
+> 你：帳單  
 > Bot：📊 掃描中，請稍候...  
 > Bot：（帳單分組結果）
 
@@ -23,10 +23,11 @@ Gmail 收到帳單信 → 掃描 PDF → Claude AI 解析金額 → 分組 → L
 - **自動排程**：每月 1 日 09:00 自動掃上個月的帳單並推 LINE
 - **手動觸發**：LINE 傳「信用卡」、「帳單」、「掃描」、「scan」任一關鍵字即觸發
 - **PDF 解密**：iText7 處理有密碼保護的帳單 PDF
-- **AI 解析**：Claude API 讀 PDF 內容萃取應繳金額
-- **分組匯款**：依付款帳戶分組，直接告訴你每個帳戶要轉多少
+- **AI 解析**：Claude AI 讀 PDF 或信件內文，萃取應繳金額與繳費期限
+- **分組匯款**：信用卡依付款帳戶分組，直接告訴你每個帳戶要轉多少
+- **居家費用通知**：水電瓦斯帳單另外推給家人，含金額與繳費期限
 
-### 分組邏輯
+### 信用卡分組邏輯
 
 | 帳戶 | 信用卡 |
 |------|--------|
@@ -34,13 +35,21 @@ Gmail 收到帳單信 → 掃描 PDF → Claude AI 解析金額 → 分組 → L
 | 台新 Richart | 台新、華銀、星展、遠東 |
 | 聯邦 | 聯邦 |
 
+### 居家費用（推給家人）
+
+| 類型 | 週期 |
+|------|------|
+| 台水帳單 | 單月 |
+| 台電帳單 | 單月 |
+| 新海瓦斯帳單 | 雙月 |
+
 ---
 
 ## 技術架構
 
 - **Runtime**：ASP.NET Core 8 Minimal API + BackgroundService
 - **Gmail 掃描**：Google Gmail API（OAuth 2.0）
-- **PDF 解析**：iText7 解密 + Claude API（claude-opus-4-8）讀取
+- **PDF 解析**：iText7 解密 + Claude API（claude-haiku-4-5）讀取
 - **通知**：LINE Messaging API（Push + Reply）
 - **部署**：Docker on Synology DS423+ NAS
 - **公開 URL**：Tailscale Funnel（`https://<your-nas>.ts.net`）
@@ -78,6 +87,35 @@ Gmail 收到帳單信 → 掃描 PDF → Claude AI 解析金額 → 分組 → L
 ### LINE Webhook 的公開 URL
 
 LINE webhook 要求 HTTPS，家裡網路 port 443 被 ISP 擋，也沒有自己的 domain，最後用 Tailscale Funnel 解決——不需要開 port，不需要 domain，NAS 主動建 tunnel，直接拿到一個固定的 HTTPS URL。
+
+### 擴充水電瓦斯帳單
+
+信用卡都搞定了之後，想說水電費也是每個月要繳，而且帳單也是寄 Email，乾脆一起掃。
+
+幾個跟信用卡不同的地方：
+
+**沒有 PDF 的不用加 `filename:pdf` 篩選器**。信用卡帳單都是 PDF 附件，但水電費的帳單有時候只有 HTML 信件內文。原本 Gmail query 一律加 `filename:pdf`，後來改成依帳單類型決定是否加，水電瓦斯就直接掃信件全文。
+
+**需要同時抓繳費期限**。信用卡只要金額，但水電費繳費有截止日，忘了繳要加滯納金。於是 prompt 改成請 Claude 回傳兩行：第一行金額、第二行繳費期限（民國年七位數），`ParseDate` 再把民國年 +1911 轉成西元存進 `DateOnly`。
+
+**瓦斯是雙月帳單**。奇數月才有帳單，偶數月沒有。不需要特別處理，掃不到 email 就不會有紀錄，LINE 也就不會顯示，自然解決。
+
+### 居家費用獨立推播
+
+水電瓦斯帳單可能由不同的人負責繳費，不一定需要知道信用卡消費明細。加一個 `FamilyUserId` 設定，掃完之後如果有居家費用紀錄，就另外 push 一則只包含水電瓦斯的訊息給指定的 LINE 使用者。
+
+取得對方的 LINE User ID：讓對方傳任意訊息給 Bot，從 log 就能看到 `LINE User ID: Uxxxxx`，填入設定即可。不填則不推送。
+
+### Google OAuth token 七天過期
+
+上線沒幾天 Gmail 掃描就失敗了，log 顯示 `invalid_grant`。原因是 Google Cloud 專案的 OAuth 同意畫面發布狀態是「測試中」，這個狀態下 refresh token 只有七天效期。
+
+NAS 是 headless 環境，container 裡面跑不了瀏覽器，沒辦法直接重新授權。解法：
+
+1. 本機重新跑一次 OAuth 流程（會開瀏覽器），產生新的 `token_store`
+2. 用 File Station 把 `token_store` 資料夾覆蓋到 NAS 上
+3. `docker restart` 讓 container 重新讀 token
+4. Google Cloud Console → 目標對象 → 發布狀態改成「實際運作中」，之後 token 就不會再過期了
 
 ---
 
@@ -122,14 +160,16 @@ LINE webhook 要求 HTTPS，家裡網路 port 443 被 ISP 擋，也沒有自己�
     "PdfPasswords": {
       "中信信用卡": "密碼",
       "台新信用卡": "密碼",
-      "富邦信用卡": "密碼"
+      "富邦信用卡": "密碼",
+      "新海瓦斯帳單": "密碼"
     }
   },
   "Line": {
     "ChannelId": "你的 ChannelId",
     "ChannelSecret": "你的 ChannelSecret",
     "ChannelAccessToken": "你的 AccessToken",
-    "UserId": ""
+    "UserId": "",
+    "FamilyUserId": ""
   },
   "Anthropic": {
     "ApiKey": "sk-ant-..."
@@ -137,7 +177,7 @@ LINE webhook 要求 HTTPS，家裡網路 port 443 被 ISP 擋，也沒有自己�
 }
 ```
 
-PDF 密碼通常是身分證字號、後四碼、或生日，各家銀行不同，自己試。
+PDF 密碼通常是身分證字號、後四碼、或生日，各家銀行不同，自己試。水電費帳單如果有加密也是一樣。`FamilyUserId` 取得方式：讓對方傳訊息給 Bot，從 log 取得 User ID 後填入（留空則不推送）。
 
 ### 4. 第一次 Gmail OAuth 授權
 
@@ -174,7 +214,8 @@ NAS 用 `appsettings.Production.json`（放在 `/volume1/docker/billing-service/
     "ChannelId": "你的 ChannelId",
     "ChannelSecret": "你的 ChannelSecret",
     "ChannelAccessToken": "你的 AccessToken",
-    "UserId": "你的 UserId"
+    "UserId": "你的 UserId",
+    "FamilyUserId": "你家人的 UserId"
   },
   "Anthropic": {
     "ApiKey": "sk-ant-..."
@@ -193,7 +234,7 @@ NAS 用 `appsettings.Production.json`（放在 `/volume1/docker/billing-service/
 
 假設要新增「玉山商務卡」，需要改三個地方：
 
-**1. `Models/BillingLabel.cs` — 加入新的 Label**
+**1. `Enums/BillingLabel.cs` — 加入新的 Label**
 
 ```csharp
 public enum BillingLabel

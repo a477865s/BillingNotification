@@ -27,12 +27,20 @@ public class LineMessagingService
         }
 
         await PushMessageAsync(userId, BuildSummaryMessage(groups, records, year, month), ct);
+
+        var familyGroupId = _config["Line:FamilyUserId"];
+        if (!string.IsNullOrEmpty(familyGroupId))
+        {
+            var utilityMessage = BuildUtilityMessage(groups, records, year, month);
+            if (utilityMessage != null)
+                await PushMessageAsync(familyGroupId, utilityMessage, ct);
+        }
     }
 
     private static string BuildSummaryMessage(IReadOnlyList<PaymentGroup> groups, List<BillingRecord> records, int year, int month)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"📊 {year}年{month}月 信用卡帳單摘要");
+        sb.AppendLine($"📊 {year}年{month}月帳單摘要");
         sb.AppendLine();
 
         if (records.Count == 0)
@@ -54,10 +62,38 @@ public class LineMessagingService
             sb.AppendLine();
         }
 
+        var ungrouped = records.Where(r => !groups.Any(g => g.Labels.Contains(r.Label))).ToList();
+        if (ungrouped.Count > 0)
+        {
+            sb.AppendLine("🏠 居家費用");
+            foreach (var r in ungrouped.OrderByDescending(r => r.Amount))
+            {
+                var dueDateStr = r.DueDate.HasValue ? $"，繳費期限{r.DueDate.Value:yyyy-MM-dd}" : "";
+                sb.AppendLine($"   {r.Date.Month}月{r.Label}，共{r.Amount:N0}元{dueDateStr}");
+            }
+            sb.AppendLine();
+        }
+
         sb.AppendLine($"💰 合計：NT$ {records.Sum(r => r.Amount):N0}");
         sb.Append($"📅 {year}/{month:D2}/01 ~ {year}/{month:D2}/{DateTime.DaysInMonth(year, month):D2}");
 
         return sb.ToString();
+    }
+
+    private static string? BuildUtilityMessage(IReadOnlyList<PaymentGroup> groups, List<BillingRecord> records, int year, int month)
+    {
+        var ungrouped = records.Where(r => !groups.Any(g => g.Labels.Contains(r.Label))).ToList();
+        if (ungrouped.Count == 0) return null;
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"🏠 {year}年{month}月居家費用");
+        sb.AppendLine();
+        foreach (var r in ungrouped.OrderByDescending(r => r.Amount))
+        {
+            var dueDateStr = r.DueDate.HasValue ? $"，繳費期限{r.DueDate.Value:yyyy-MM-dd}" : "";
+            sb.AppendLine($"   {r.Date.Month}月{r.Label}，共{r.Amount:N0}元{dueDateStr}");
+        }
+        return sb.ToString().TrimEnd();
     }
 
     public async Task ReplyMessageAsync(string replyToken, string text, CancellationToken ct = default)

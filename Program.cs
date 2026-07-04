@@ -10,6 +10,7 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
 
 builder.Services.AddScoped<ClaudePdfParserService>();
+builder.Services.AddScoped<BillPromptService>();
 builder.Services.AddScoped<GmailScannerService>();
 builder.Services.AddScoped<LineMessagingService>();
 builder.Services.AddScoped<BillingGroupingService>();

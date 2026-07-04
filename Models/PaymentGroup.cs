@@ -1,3 +1,5 @@
+using BillingNotificationService.Enums;
+
 namespace BillingNotificationService.Models;
 
 public record PaymentGroup(string AccountDescription, IReadOnlyList<BillingLabel> Labels);

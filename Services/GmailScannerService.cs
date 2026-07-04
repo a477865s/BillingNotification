@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using BillingNotificationService.Enums;
 using BillingNotificationService.Models;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Gmail.v1;
@@ -16,12 +17,14 @@ public class GmailScannerService
     private readonly IConfiguration _config;
     private readonly ILogger<GmailScannerService> _logger;
     private readonly ClaudePdfParserService _claudeParser;
+    private readonly BillPromptService _promptService;
 
-    public GmailScannerService(IConfiguration config, ILogger<GmailScannerService> logger, ClaudePdfParserService claudeParser)
+    public GmailScannerService(IConfiguration config, ILogger<GmailScannerService> logger, ClaudePdfParserService claudeParser, BillPromptService promptService)
     {
         _config = config;
         _logger = logger;
         _claudeParser = claudeParser;
+        _promptService = promptService;
     }
 
     public async Task<List<EmailPreview>> GetEmailPreviewsAsync(int year, int month, CancellationToken ct = default)
@@ -39,13 +42,12 @@ public class GmailScannerService
         try
         {
             var labelMap = await ResolveLabelIdsAsync(service, ct);
-            var dateQuery = BuildDateQuery(year, month);
 
             foreach (var (billingLabel, gmailLabelId) in labelMap)
             {
                 var listRequest = service.Users.Messages.List("me");
                 listRequest.LabelIds = new[] { gmailLabelId };
-                listRequest.Q = dateQuery;
+                listRequest.Q = BuildDateQuery(year, month, requirePdf: !_promptService.IsUtility(billingLabel));
                 listRequest.MaxResults = _config.GetValue<long>("Gmail:MaxResults", 50);
 
                 var response = await listRequest.ExecuteAsync(ct);
@@ -73,13 +75,13 @@ public class GmailScannerService
                         if (pdfBytes != null)
                         {
                             var password = _config[$"Gmail:PdfPasswords:{billingLabel}"] ?? "";
-                            amount = await _claudeParser.ExtractAmountFromPdfAsync(pdfBytes, password, billingLabel, ct);
+                            (amount, _) = await _claudeParser.ExtractBillInfoFromPdfAsync(pdfBytes, password, _promptService.GetPdfPrompt(billingLabel), billingLabel.ToString(), ct);
                             snippet = "(PDF 附件)";
                         }
                         else
                         {
                             var bodyText = ExtractBody(message.Payload);
-                            amount = await _claudeParser.ExtractAmountFromTextAsync(bodyText, billingLabel, ct);
+                            (amount, _) = await _claudeParser.ExtractBillInfoFromTextAsync(bodyText, _promptService.GetTextPrompt(billingLabel), billingLabel.ToString(), ct);
                             snippet = bodyText.Length > 500 ? bodyText[..500] + "…" : bodyText;
                         }
 
@@ -132,7 +134,6 @@ public class GmailScannerService
         try
         {
             var labelMap = await ResolveLabelIdsAsync(service, ct);
-            var dateQuery = BuildDateQuery(year, month);
 
             _logger.LogInformation("Scanning {LabelCount} labels for {Year}/{Month:D2}", labelMap.Count, year, month);
 
@@ -140,7 +141,7 @@ public class GmailScannerService
             {
                 var listRequest = service.Users.Messages.List("me");
                 listRequest.LabelIds = new[] { gmailLabelId };
-                listRequest.Q = dateQuery;
+                listRequest.Q = BuildDateQuery(year, month, requirePdf: !_promptService.IsUtility(billingLabel));
                 listRequest.MaxResults = _config.GetValue<long>("Gmail:MaxResults", 50);
 
                 var response = await listRequest.ExecuteAsync(ct);
@@ -203,12 +204,15 @@ public class GmailScannerService
             date = DateTimeOffset.FromUnixTimeMilliseconds(message.InternalDate ?? 0).LocalDateTime;
 
         decimal amount = 0;
+        DateOnly? dueDate = null;
+
         var pdfBytes = await GetPdfAttachmentAsync(service, message.Id!, message.Payload, ct);
         if (pdfBytes != null)
         {
             _logger.LogInformation("[{Label}] PDF found ({Bytes}B), sending to Claude", label, pdfBytes.Length);
             var password = _config[$"Gmail:PdfPasswords:{label}"] ?? "";
-            amount = await _claudeParser.ExtractAmountFromPdfAsync(pdfBytes, password, label, ct) ?? 0;
+            (var pdfAmount, dueDate) = await _claudeParser.ExtractBillInfoFromPdfAsync(pdfBytes, password, _promptService.GetPdfPrompt(label), label.ToString(), ct);
+            amount = pdfAmount ?? 0;
         }
         else
         {
@@ -218,7 +222,9 @@ public class GmailScannerService
         if (amount <= 0)
         {
             var bodyText = ExtractBody(message.Payload);
-            amount = await _claudeParser.ExtractAmountFromTextAsync(bodyText, label, ct) ?? 0;
+            (var textAmount, var textDueDate) = await _claudeParser.ExtractBillInfoFromTextAsync(bodyText, _promptService.GetTextPrompt(label), label.ToString(), ct);
+            amount = textAmount ?? 0;
+            dueDate ??= textDueDate;
         }
 
         if (amount <= 0)
@@ -227,7 +233,7 @@ public class GmailScannerService
             return null;
         }
 
-        return new BillingRecord(message.Id!, subject, from, date, amount, label);
+        return new BillingRecord(message.Id!, subject, from, date, amount, label, DueDate: dueDate);
     }
 
     private async Task<byte[]?> GetPdfAttachmentAsync(GmailService service, string messageId, MessagePart? part, CancellationToken ct)
@@ -273,11 +279,12 @@ public class GmailScannerService
             .ToDictionary(l => enumNameMap[l.Name.Split('/').Last()], l => l.Id);
     }
 
-    private static string BuildDateQuery(int year, int month)
+    private static string BuildDateQuery(int year, int month, bool requirePdf)
     {
         var start = new DateTime(year, month, 1);
-        // filename:pdf filters out promotional emails that share the same label but have no PDF
-        return $"after:{start:yyyy/MM/dd} before:{start.AddMonths(1):yyyy/MM/dd} filename:pdf";
+        var range = $"after:{start:yyyy/MM/dd} before:{start.AddMonths(1):yyyy/MM/dd}";
+        // filename:pdf filters out promotional emails that share the same credit card label but have no PDF
+        return requirePdf ? $"{range} filename:pdf" : range;
     }
 
     private async Task<GmailService> CreateGmailServiceAsync(CancellationToken ct)
@@ -351,5 +358,4 @@ public class GmailScannerService
         html = System.Net.WebUtility.HtmlDecode(html);
         return Regex.Replace(html, @"\s+", " ").Trim();
     }
-
 }
