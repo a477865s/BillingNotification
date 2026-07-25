@@ -37,6 +37,11 @@ public class LineMessagingService
         }
     }
 
+    public async Task SendSummaryToUserAsync(string userId, IReadOnlyList<PaymentGroup> groups, List<BillingRecord> records, int year, int month, CancellationToken ct = default)
+    {
+        await PushMessageAsync(userId, BuildSummaryMessage(groups, records, year, month), ct);
+    }
+
     private static string BuildSummaryMessage(IReadOnlyList<PaymentGroup> groups, List<BillingRecord> records, int year, int month)
     {
         var sb = new StringBuilder();
