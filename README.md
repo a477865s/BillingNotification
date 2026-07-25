@@ -20,8 +20,8 @@ Gmail 收到帳單信 → 掃描 PDF/信件內容 → Claude AI 解析金額與�
 
 ## 功能
 
-- **自動排程**：每月 1 日 09:00 自動掃上個月的帳單並推 LINE
-- **手動觸發**：LINE 傳「信用卡」、「帳單」、「掃描」、「scan」任一關鍵字即觸發
+- **自動排程**：每月 1 日、15 日 09:00 各掃一次上個月的帳單並推播（15 日那次重掃同一個月，避免漏抓晚到的帳單信），排程日可調整
+- **手動觸發**：LINE 傳「信用卡」、「帳單」、「掃描」、「scan」任一關鍵字即觸發，結果只回覆給發話的人，不會廣播給其他人
 - **PDF 解密**：iText7 處理有密碼保護的帳單 PDF
 - **AI 解析**：Claude AI 讀 PDF 或信件內文，萃取應繳金額與繳費期限
 - **分組匯款**：信用卡依付款帳戶分組，直接告訴你每個帳戶要轉多少
@@ -116,6 +116,34 @@ NAS 是 headless 環境，container 裡面跑不了瀏覽器，沒辦法直接�
 2. 用 File Station 把 `token_store` 資料夾覆蓋到 NAS 上
 3. `docker restart` 讓 container 重新讀 token
 4. Google Cloud Console → 目標對象 → 發布狀態改成「實際運作中」，之後 token 就不會再過期了
+
+### 換到 MacBook Pro 開發
+
+原本都在 Windows 上開發，換了新的 MacBook Pro 之後遇到幾個環境問題：
+
+**`dotnet` 指令找不到**：裝完 .NET SDK 沒有自動加進 PATH，要自己在 `~/.zshrc` 補：
+
+```bash
+export DOTNET_ROOT="$HOME/.dotnet"
+export PATH="$PATH:$HOME/.dotnet:$HOME/.dotnet/tools"
+```
+
+**Docker image 架構不對**：MacBook Pro（Apple Silicon）是 arm64，但 NAS 是 x86_64。原本 Windows 上直接 `docker build` 沒問題，換 Mac 之後要加 `--platform linux/amd64`，不然 image 搬到 NAS 上會跑不起來。
+
+**Container Manager 誤報「意外停止」**：透過 SSH 下 `docker compose down && up -d` 重新部署時，因為不是從 Container Manager 介面操作，它的監控機制會把這次重啟當成「意外停止」跳通知，其實只是正常部署流程，不是真的 crash。
+
+**`.DS_Store`**：macOS Finder 幫每個資料夾產生的中繼資料檔案，跟專案無關，加進 `.gitignore` 忽略掉。
+
+### 手動查詢只回覆給自己
+
+原本不管是排程還是手動在 LINE 問 Bot，結果都會廣播給自己跟家人。但平常想隨口問一下這個月刷多少，其實不需要驚動家人。改成：
+
+- **排程**（每月 1、15 日）：維持原本廣播給 `Line:UserId` + `Line:FamilyUserId`
+- **手動關鍵字觸發**：只回覆給發話的那個人（從 LINE webhook event 的 `source.userId` 取得），而且不會更新 `last_run.json`，不會影響排程的補跑判斷
+
+### 排程改成一個月兩次
+
+原本一個月只在 1 號掃一次上個月的帳單，但有些銀行信件會晚到，1 號那次可能會漏掉。改成 1 號、15 號都重掃同一個月，15 號那次算是補漏網之魚。排程日可以用 `BillingNotification:ScheduleDaysOfMonth`（預設 `[1, 15]`）搭配 `BillingNotification:ScheduleHour`（預設 `9`）調整。
 
 ---
 
@@ -274,15 +302,29 @@ new PaymentGroup("郵局", new[]
 
 ### 第一步：本機 build
 
+Windows：
+
 ```powershell
 cd "C:\Users\lin\Desktop\SideProject\BillingNotificationService"
 docker build -t billing-notification-service:latest .
 docker save billing-notification-service:latest -o billing-service.tar
 ```
 
+macOS（Apple Silicon 要加 `--platform`，NAS 是 x86_64，架構不一致 image 會跑不起來）：
+
+```bash
+cd ~/Desktop/SideProject/BillingNotification
+docker build --platform linux/amd64 -t billing-notification-service:latest .
+docker save billing-notification-service:latest -o billing-service.tar
+```
+
 ### 第二步：上傳到 NAS
 
-用 FileStation 把 `billing-service.tar` 上傳到 `/docker/billing-service/`，覆蓋舊檔。
+用 FileStation 把 `billing-service.tar` 上傳到 `/docker/billing-service/`，覆蓋舊檔。有開 SSH 的話也可以直接 `scp`：
+
+```bash
+scp -P <NAS SSH port> billing-service.tar <帳號>@<NAS位址>:/volume1/docker/billing-service/
+```
 
 ### 第三步：NAS load 新 image
 
