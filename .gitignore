@@ -7,6 +7,9 @@ riderModule.iml
 .claude/
 *.DotSettings.user
 
+# macOS
+.DS_Store
+
 # Secrets — never commit these
 appsettings.Development.json
 credentials.json
