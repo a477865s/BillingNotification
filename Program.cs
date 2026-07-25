@@ -131,10 +131,12 @@ app.MapPost("/api/line/webhook", async (HttpContext context, IConfiguration conf
         using var doc = JsonDocument.Parse(body);
         foreach (var ev in doc.RootElement.GetProperty("events").EnumerateArray())
         {
+            string? senderUserId = null;
             if (ev.TryGetProperty("source", out var source) &&
                 source.TryGetProperty("userId", out var userId))
             {
-                logger.LogInformation("LINE User ID: {UserId}", userId.GetString());
+                senderUserId = userId.GetString();
+                logger.LogInformation("LINE User ID: {UserId}", senderUserId);
             }
 
             if (ev.TryGetProperty("type", out var evType) && evType.GetString() == "message" &&
@@ -155,7 +157,7 @@ app.MapPost("/api/line/webhook", async (HttpContext context, IConfiguration conf
                     }
 
                     var target = DateTime.Now;
-                    _ = Task.Run(() => worker.RunScanAsync(target.Year, target.Month));
+                    _ = Task.Run(() => worker.RunScanAsync(target.Year, target.Month, notifyOnlyUserId: senderUserId));
                 }
             }
         }

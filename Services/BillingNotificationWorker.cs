@@ -38,8 +38,10 @@ public class BillingNotificationWorker : BackgroundService
         }
     }
 
-    // Called from the manual API endpoint and the scheduled loop
-    public async Task<List<PaymentGroupSummary>> RunScanAsync(int year, int month, CancellationToken ct = default)
+    // Called from the manual API endpoint and the scheduled loop.
+    // notifyOnlyUserId: when set (LINE keyword trigger), reply only to that person instead of
+    // broadcasting to Line:UserId + Line:FamilyUserId, and skip marking the month as officially run.
+    public async Task<List<PaymentGroupSummary>> RunScanAsync(int year, int month, CancellationToken ct = default, string? notifyOnlyUserId = null)
     {
         _logger.LogInformation("Starting billing scan for {Year}/{Month:D2}", year, month);
         try
@@ -61,8 +63,15 @@ public class BillingNotificationWorker : BackgroundService
                 })
                 .ToList();
 
-            await line.SendMonthlySummaryAsync(groups, records, year, month, ct);
-            SaveLastRunDate(DateTime.Now);
+            if (notifyOnlyUserId != null)
+            {
+                await line.SendSummaryToUserAsync(notifyOnlyUserId, groups, records, year, month, ct);
+            }
+            else
+            {
+                await line.SendMonthlySummaryAsync(groups, records, year, month, ct);
+                SaveLastRunDate(DateTime.Now);
+            }
 
             return summaries;
         }
@@ -73,17 +82,31 @@ public class BillingNotificationWorker : BackgroundService
         }
     }
 
+    private static readonly int[] DefaultScheduleDays = [1, 15];
+
+    // Every scheduled slot in a given month re-scans the same previous month (catches late-arriving bills).
+    private List<int> GetScheduleDays()
+    {
+        var days = _config.GetSection("BillingNotification:ScheduleDaysOfMonth").Get<int[]>();
+        return (days is { Length: > 0 } ? days : DefaultScheduleDays).Distinct().OrderBy(d => d).ToList();
+    }
+
     private async Task RunIfOverdueAsync(CancellationToken ct)
     {
-        var scheduledDay = _config.GetValue("BillingNotification:ScheduleDayOfMonth", 1);
+        var scheduledHour = _config.GetValue("BillingNotification:ScheduleHour", 9);
         var now = DateTime.Now;
 
-        if (now.Day < scheduledDay) return;
+        var pastSlots = GetScheduleDays()
+            .Select(d => new DateTime(now.Year, now.Month, d, scheduledHour, 0, 0))
+            .Where(slot => slot <= now)
+            .ToList();
 
-        var scheduledThisMonth = new DateTime(now.Year, now.Month, scheduledDay);
-        if (ReadLastRunDate() < scheduledThisMonth)
+        if (pastSlots.Count == 0) return;
+
+        var mostRecentSlot = pastSlots.Max();
+        if (ReadLastRunDate() < mostRecentSlot)
         {
-            var target = now.AddMonths(-1);
+            var target = mostRecentSlot.AddMonths(-1);
             _logger.LogInformation("Running overdue scan for {Month}", target.ToString("yyyy/MM"));
             await RunScanAsync(target.Year, target.Month, ct);
         }
@@ -91,12 +114,19 @@ public class BillingNotificationWorker : BackgroundService
 
     private DateTime CalculateNextRunTime()
     {
-        var scheduledDay = _config.GetValue("BillingNotification:ScheduleDayOfMonth", 1);
         var scheduledHour = _config.GetValue("BillingNotification:ScheduleHour", 9);
+        var days = GetScheduleDays();
         var now = DateTime.Now;
 
-        var candidate = new DateTime(now.Year, now.Month, scheduledDay, scheduledHour, 0, 0);
-        return candidate > now ? candidate : candidate.AddMonths(1);
+        var upcomingThisMonth = days
+            .Select(d => new DateTime(now.Year, now.Month, d, scheduledHour, 0, 0))
+            .Where(slot => slot > now)
+            .ToList();
+
+        if (upcomingThisMonth.Count > 0) return upcomingThisMonth.Min();
+
+        var nextMonth = now.AddMonths(1);
+        return new DateTime(nextMonth.Year, nextMonth.Month, days.Min(), scheduledHour, 0, 0);
     }
 
     private string LastRunFile => _config["BillingNotification:LastRunFile"] ?? "last_run.json";
